@@ -33,7 +33,7 @@ MAX_HISTORY = 30
 def fetch_open_meteo(lat, lon):
     """Fetch hourly forecast from Open-Meteo with temperature, humidity, pressure, wind."""
     try:
-        url = f'https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,relative_humidity_2m,pressure_msl,wind_speed_10m&forecast_days=1&timezone=auto&temperature_unit=fahrenheit'
+        url = f'https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,relative_humidity_2m,pressure_msl,wind_speed_10m&forecast_days=2&timezone=auto&temperature_unit=fahrenheit'
         resp = requests.get(url, timeout=30)
         resp.raise_for_status()
         data = resp.json()
@@ -43,6 +43,7 @@ def fetch_open_meteo(lat, lon):
             'humidity': hourly.get('relative_humidity_2m', []),
             'pressure': hourly.get('pressure_msl', []),
             'wind': hourly.get('wind_speed_10m', []),
+            'times': hourly.get('time', []),
             'source': 'openmeteo'
         }
     except Exception as e:
@@ -64,20 +65,60 @@ def fetch_nws(lat, lon):
         periods = forecast_resp.json()['properties']['periods']
         
         # Use all hourly data, not just daytime (24+ hours)
-        temps = [p['temperature'] for p in periods][:48]
-        wind = [p.get('windSpeed', '0 mph').split()[0] if p.get('windSpeed') else 0 for p in periods][:48]
+        temps = [p['temperature'] for p in periods][:96]
+        wind = [p.get('windSpeed', '0 mph').split()[0] if p.get('windSpeed') else 0 for p in periods][:96]
+        times = [p.get('startTime', '') for p in periods][:96]
         
         return {
             'temps': temps,
             'humidity': [],
             'pressure': [],
             'wind': [float(w) if w else 0 for w in wind],
+            'times': times,
             'source': 'nws'
         }
     except Exception as e:
         import traceback
         print(f"Error fetching from NWS: {e}")
         traceback.print_exc()
+        return None
+
+def fetch_current_observation_openmeteo(lat, lon):
+    """Fetch current observation from Open-Meteo."""
+    try:
+        url = f'https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m&temperature_unit=fahrenheit'
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        current_temp = data['current'].get('temperature_2m', None)
+        return current_temp
+    except Exception as e:
+        return None
+
+def fetch_current_observation_nws(lat, lon):
+    """Fetch current observation from NOAA/NWS stations."""
+    try:
+        headers = {'User-Agent': 'weather-bot/1.0'}
+        # Get nearest station
+        points_url = f'https://api.weather.gov/points/{lat},{lon}'
+        points_resp = requests.get(points_url, headers=headers, timeout=30)
+        points_resp.raise_for_status()
+        stations_url = points_resp.json()['properties']['observationStations']
+        
+        # Get first station
+        stations_resp = requests.get(stations_url, headers=headers, timeout=30)
+        stations_resp.raise_for_status()
+        first_station = stations_resp.json()['features'][0]['id']
+        
+        # Get latest observation from station
+        obs_url = f'{first_station}/observations/latest'
+        obs_resp = requests.get(obs_url, headers=headers, timeout=30)
+        obs_resp.raise_for_status()
+        temp_c = obs_resp.json()['properties']['temperature']['value']
+        # Convert Celsius to Fahrenheit
+        temp_f = (temp_c * 9/5) + 32 if temp_c is not None else None
+        return temp_f
+    except Exception as e:
         return None
 
 
@@ -214,20 +255,40 @@ def robust_ensemble_max(forecast_data_list):
         'source_spread': max(corrected_maxes) - min(corrected_maxes),
         'hourly': hourly_ensemble,
         'max_variance': max_variance,
-        'hourly_range': max(hourly_ensemble) - min(hourly_ensemble) if hourly_ensemble else 0
+        'hourly_range': max(hourly_ensemble) - min(hourly_ensemble) if hourly_ensemble else 0,
+        'times': forecast_data_list[0].get('times', [])  # Use times from first data source
     }
 
 # --- REPORT GENERATION ---
-def generate_report(airport_code, airport_name, forecast_data_1, forecast_data_2):
+def generate_report(airport_code, airport_name, forecast_data_1, forecast_data_2, current_obs_1=None, current_obs_2=None):
     """Generate comprehensive forecast report with ensemble predictions, uncertainty, and hourly breakdown."""
     ensemble = robust_ensemble_max([forecast_data_1, forecast_data_2])
     
     if ensemble is None:
         return f"{airport_code} ({airport_name}): Data unavailable. Check API connections.\n"
     
+    # Calculate current observations ensemble
+    current_obs_str = ""
+    if current_obs_1 is not None or current_obs_2 is not None:
+        current_temps = []
+        if current_obs_1 is not None:
+            current_temps.append(current_obs_1)
+        if current_obs_2 is not None:
+            current_temps.append(current_obs_2)
+        
+        if current_temps:
+            current_obs_ensemble = mean(current_temps)
+            current_obs_str = f"\n🌡️  CURRENT OBSERVATION (Ensemble Average):\n  {current_obs_ensemble:.1f}°F"
+            if current_obs_1 is not None:
+                current_obs_str += f"  (Open-Meteo: {current_obs_1:.1f}°F)"
+            if current_obs_2 is not None:
+                current_obs_str += f" (NWS: {current_obs_2:.1f}°F)"
+            current_obs_str += "\n"
+    
     report = (
         f"\n{airport_code} ({airport_name}) Forecast for Today:\n"
         f"{'='*60}\n"
+        + current_obs_str +
         f"\n📊 ENSEMBLE PREDICTIONS (Weighted Average):\n"
         f"  Maximum Temperature:  {ensemble['max']:.1f}°F  (±{ensemble['max_ci']:.1f}°F 95% CI)\n"
         f"  Minimum Temperature:  {ensemble['min']:.1f}°F  (±{ensemble['min_ci']:.1f}°F 95% CI)\n"
@@ -243,16 +304,6 @@ def generate_report(airport_code, airport_name, forecast_data_1, forecast_data_2
         f"  Open-Meteo Min: {ensemble['source_mins'][0]:.1f}°F\n"
         f"  NWS Min:        {ensemble['source_mins'][1]:.1f}°F\n"
     )
-    
-    # Add hourly breakdown for first 12 hours with actual times in Central Time
-    if ensemble['hourly']:
-        report += f"\n⏰ HOURLY FORECAST (First 12 hours, Central Time):\n"
-        now_utc = datetime.now(tz=ZoneInfo("UTC"))
-        now_central = now_utc.astimezone(ZoneInfo("America/Chicago"))
-        for i, temp in enumerate(ensemble['hourly'][:12]):
-            hour_time = now_central.replace(minute=0, second=0, microsecond=0) + timedelta(hours=i)
-            time_str = hour_time.strftime('%H:%M (%I:%M %p)')
-            report += f"  {time_str}: {temp:6.1f}°F\n"
     
     report += f"\n{'='*60}\n"
     return report
@@ -277,9 +328,13 @@ def main():
             openmeteo_data = fetch_open_meteo(airport_info['lat'], airport_info['lon'])
             nws_data = fetch_nws(airport_info['lat'], airport_info['lon'])
             
+            # Fetch current observations
+            current_obs_openmeteo = fetch_current_observation_openmeteo(airport_info['lat'], airport_info['lon'])
+            current_obs_nws = fetch_current_observation_nws(airport_info['lat'], airport_info['lon'])
+            
             if openmeteo_data and nws_data:
                 # Generate report with improved ensemble
-                report = generate_report(airport_code, airport_info['city'], openmeteo_data, nws_data)
+                report = generate_report(airport_code, airport_info['city'], openmeteo_data, nws_data, current_obs_openmeteo, current_obs_nws)
                 full_report += report
             else:
                 full_report += f"{airport_code} ({airport_info['city']}): Data fetch failed. Check API connections.\n"
