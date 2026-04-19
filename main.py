@@ -4,6 +4,10 @@ from statistics import median, mean, stdev
 import json
 import os
 from collections import deque
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+except ImportError:
+    from backports.zoneinfo import ZoneInfo  # For older Python if needed
 
 # --- CONFIGURATION ---
 AIRPORTS = {
@@ -236,12 +240,13 @@ def generate_report(airport_code, airport_name, forecast_data_1, forecast_data_2
         f"  NWS Min:        {ensemble['source_mins'][1]:.1f}°F\n"
     )
     
-    # Add hourly breakdown for first 12 hours with actual times
+    # Add hourly breakdown for first 12 hours with actual times in Central Time
     if ensemble['hourly']:
-        report += f"\n⏰ HOURLY FORECAST (First 12 hours):\n"
-        now = datetime.now()
+        report += f"\n⏰ HOURLY FORECAST (First 12 hours, Central Time):\n"
+        now_utc = datetime.now(tz=ZoneInfo("UTC"))
+        now_central = now_utc.astimezone(ZoneInfo("America/Chicago"))
         for i, temp in enumerate(ensemble['hourly'][:12]):
-            hour_time = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=i)
+            hour_time = now_central.replace(minute=0, second=0, microsecond=0) + timedelta(hours=i)
             time_str = hour_time.strftime('%H:%M (%I:%M %p)')
             report += f"  {time_str}: {temp:6.1f}°F\n"
     
