@@ -34,7 +34,7 @@ def fetch_open_meteo(lat, lon):
     """Fetch hourly forecast from Open-Meteo with temperature, humidity, pressure, wind."""
     try:
         url = f'https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,relative_humidity_2m,pressure_msl,wind_speed_10m&forecast_days=1&timezone=auto&temperature_unit=fahrenheit'
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, timeout=30)
         resp.raise_for_status()
         data = resp.json()
         hourly = data['hourly']
@@ -45,8 +45,10 @@ def fetch_open_meteo(lat, lon):
             'wind': hourly.get('wind_speed_10m', []),
             'source': 'openmeteo'
         }
-    except requests.RequestException as e:
+    except Exception as e:
+        import traceback
         print(f"Error fetching from Open-Meteo: {e}")
+        traceback.print_exc()
         return None
 
 def fetch_nws(lat, lon):
@@ -54,10 +56,10 @@ def fetch_nws(lat, lon):
     try:
         headers = {'User-Agent': 'weather-bot/1.0'}
         points_url = f'https://api.weather.gov/points/{lat},{lon}'
-        points_resp = requests.get(points_url, headers=headers, timeout=10)
+        points_resp = requests.get(points_url, headers=headers, timeout=30)
         points_resp.raise_for_status()
         forecast_url = points_resp.json()['properties']['forecastHourly']
-        forecast_resp = requests.get(forecast_url, headers=headers, timeout=10)
+        forecast_resp = requests.get(forecast_url, headers=headers, timeout=30)
         forecast_resp.raise_for_status()
         periods = forecast_resp.json()['properties']['periods']
         
@@ -72,8 +74,10 @@ def fetch_nws(lat, lon):
             'wind': [float(w) if w else 0 for w in wind],
             'source': 'nws'
         }
-    except requests.RequestException as e:
+    except Exception as e:
+        import traceback
         print(f"Error fetching from NWS: {e}")
+        traceback.print_exc()
         return None
 
 
