@@ -1,5 +1,5 @@
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from statistics import median, mean, stdev
 import json
 import os
@@ -236,11 +236,14 @@ def generate_report(airport_code, airport_name, forecast_data_1, forecast_data_2
         f"  NWS Min:        {ensemble['source_mins'][1]:.1f}°F\n"
     )
     
-    # Add hourly breakdown for first 12 hours
+    # Add hourly breakdown for first 12 hours with actual times
     if ensemble['hourly']:
         report += f"\n⏰ HOURLY FORECAST (First 12 hours):\n"
+        now = datetime.now()
         for i, temp in enumerate(ensemble['hourly'][:12]):
-            report += f"  Hour {i:2d}: {temp:6.1f}°F\n"
+            hour_time = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=i)
+            time_str = hour_time.strftime('%H:%M (%I:%M %p)')
+            report += f"  {time_str}: {temp:6.1f}°F\n"
     
     report += f"\n{'='*60}\n"
     return report
