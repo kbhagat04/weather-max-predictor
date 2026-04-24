@@ -8,11 +8,20 @@ try:
     from zoneinfo import ZoneInfo  # Python 3.9+
 except ImportError:
     from backports.zoneinfo import ZoneInfo  # For older Python if needed
+from typing import Optional
+
+# Rich for improved terminal UI
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+from rich import box
 
 # --- CONFIGURATION ---
 AIRPORTS = {
     'KAUS': {'lat': 30.1944, 'lon': -97.67, 'city': 'Austin'},
-    'KDFW': {'lat': 32.8968, 'lon': -97.038, 'city': 'Dallas-Fort Worth'}
+    'KDFW': {'lat': 32.8968, 'lon': -97.038, 'city': 'Dallas-Fort Worth'},
+    'KLGA': {'lat': 40.76, 'lon': -73.86, 'city': 'New York'}
 }
 
 # --- ADAPTIVE BIAS CORRECTION AND WEIGHTED ENSEMBLE CONFIG ---
@@ -260,31 +269,33 @@ def robust_ensemble_max(forecast_data_list):
     }
 
 # --- REPORT GENERATION ---
-def generate_report(airport_code, airport_name, forecast_data_1, forecast_data_2, current_obs_1=None, current_obs_2=None):
-    """Generate comprehensive forecast report with ensemble predictions, uncertainty, and hourly breakdown."""
+def generate_report(airport_code: str, airport_name: str, forecast_data_1: dict, forecast_data_2: dict, current_obs_1: Optional[float]=None, current_obs_2: Optional[float]=None):
+    """Generate comprehensive forecast report with ensemble predictions, uncertainty, and hourly breakdown.
+    Returns a tuple of (report_string, ensemble_dict_or_None).
+    """
     ensemble = robust_ensemble_max([forecast_data_1, forecast_data_2])
-    
+
     if ensemble is None:
-        return f"{airport_code} ({airport_name}): Data unavailable. Check API connections.\n"
-    
+        return (f"{airport_code} ({airport_name}): Data unavailable. Check API connections.\n", None)
+
     # Calculate current observations ensemble
     current_obs_str = ""
+    current_obs_ensemble = None
     if current_obs_1 is not None or current_obs_2 is not None:
-        current_temps = []
-        if current_obs_1 is not None:
-            current_temps.append(current_obs_1)
-        if current_obs_2 is not None:
-            current_temps.append(current_obs_2)
-        
+        current_temps = [t for t in (current_obs_1, current_obs_2) if t is not None]
         if current_temps:
             current_obs_ensemble = mean(current_temps)
-            current_obs_str = f"\n🌡️  CURRENT OBSERVATION (Ensemble Average):\n  {current_obs_ensemble:.1f}°F"
+            current_obs_str = f"\n🌡️  CURRENT OBSERVATION (Ensemble Average): {current_obs_ensemble:.1f}°F"
+            details = []
             if current_obs_1 is not None:
-                current_obs_str += f"  (Open-Meteo: {current_obs_1:.1f}°F)"
+                details.append(f"Open-Meteo: {current_obs_1:.1f}°F")
             if current_obs_2 is not None:
-                current_obs_str += f" (NWS: {current_obs_2:.1f}°F)"
-            current_obs_str += "\n"
-    
+                details.append(f"NWS: {current_obs_2:.1f}°F")
+            if details:
+                current_obs_str += "  (" + ", ".join(details) + ")\n"
+            else:
+                current_obs_str += "\n"
+
     report = (
         f"\n{airport_code} ({airport_name}) Forecast for Today:\n"
         f"{'='*60}\n"
@@ -304,49 +315,66 @@ def generate_report(airport_code, airport_name, forecast_data_1, forecast_data_2
         f"  Open-Meteo Min: {ensemble['source_mins'][0]:.1f}°F\n"
         f"  NWS Min:        {ensemble['source_mins'][1]:.1f}°F\n"
     )
-    
+
     report += f"\n{'='*60}\n"
-    return report
+    return (report, ensemble)
 
 # --- MAIN ---
 def main():
     """Generate weather forecasts for all configured airports with adaptive ensemble."""
+    console = Console()
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"\n{'='*60}")
-    print(f"🌤️  Weather Forecast Bot - Advanced Ensemble Predictor")
-    print(f"Generated: {timestamp}")
-    print(f"{'='*60}")
+    console.rule("🌤️  Weather Forecast Bot - Advanced Ensemble Predictor")
+    console.print(f"Generated: {timestamp}", style="dim")
     
     # Load historical performance for adaptive weighting
     history = load_forecast_history()
     adaptive_weights = calculate_adaptive_weights(history)
     
-    full_report = ""
     for airport_code, airport_info in AIRPORTS.items():
         try:
-            # Fetch forecasts from both sources with full meteorological data
-            openmeteo_data = fetch_open_meteo(airport_info['lat'], airport_info['lon'])
-            nws_data = fetch_nws(airport_info['lat'], airport_info['lon'])
-            
-            # Fetch current observations
-            current_obs_openmeteo = fetch_current_observation_openmeteo(airport_info['lat'], airport_info['lon'])
-            current_obs_nws = fetch_current_observation_nws(airport_info['lat'], airport_info['lon'])
-            
-            if openmeteo_data and nws_data:
-                # Generate report with improved ensemble
-                report = generate_report(airport_code, airport_info['city'], openmeteo_data, nws_data, current_obs_openmeteo, current_obs_nws)
-                full_report += report
-            else:
-                full_report += f"{airport_code} ({airport_info['city']}): Data fetch failed. Check API connections.\n"
+            with console.status(f"Fetching forecasts for {airport_code} ({airport_info['city']})...", spinner="dots"):
+                openmeteo_data = fetch_open_meteo(airport_info['lat'], airport_info['lon'])
+                nws_data = fetch_nws(airport_info['lat'], airport_info['lon'])
+                current_obs_openmeteo = fetch_current_observation_openmeteo(airport_info['lat'], airport_info['lon'])
+                current_obs_nws = fetch_current_observation_nws(airport_info['lat'], airport_info['lon'])
+
+            report, ensemble = generate_report(airport_code, airport_info['city'], openmeteo_data, nws_data, current_obs_openmeteo, current_obs_nws)
+
+            if ensemble is None:
+                console.print(Panel(Text(report), style="red"))
+                continue
+
+            # Create a concise summary table for quick readability
+            tbl = Table.grid(padding=(0,1))
+            tbl.add_column(justify="left", ratio=2)
+            tbl.add_column(justify="right", ratio=1)
+
+            tbl.add_row("Maximum", f"{ensemble['max']:.1f}°F (±{ensemble['max_ci']:.1f})")
+            tbl.add_row("Minimum", f"{ensemble['min']:.1f}°F (±{ensemble['min_ci']:.1f})")
+            tbl.add_row("Mean", f"{ensemble['mean']:.1f}°F")
+            tbl.add_row("Daily Range", f"{ensemble['max'] - ensemble['min']:.1f}°F")
+            tbl.add_row("Confidence", ensemble['confidence'])
+            tbl.add_row("Source Spread", f"{ensemble['source_spread']:.1f}°F")
+
+            # Hourly snippet (first 12 values)
+            hours_snippet = ensemble.get('hourly', [])[:12]
+            hours_str = ', '.join(f"{h:.0f}°F" for h in hours_snippet) if hours_snippet else 'N/A'
+            tbl.add_row("Hourly (first 12)", hours_str)
+
+            header = f"{airport_code} — {airport_info['city']}"
+            console.print(Panel(tbl, title=header, box=box.ROUNDED, expand=False))
+
+            # Also print the detailed textual report in dim style for users who want more context
+            console.print(Text(report), style="dim")
+
         except Exception as e:
-            print(f"Error processing {airport_code}: {e}")
-            full_report += f"{airport_code}: Error - {str(e)}\n"
-    
-    print(full_report)
-    print(f"{'='*60}")
-    print("✓ Report generated successfully.")
-    print(f"Adaptive Weights - Open-Meteo: {adaptive_weights['openmeteo']:.2f}, NWS: {adaptive_weights['nws']:.2f}")
-    print(f"{'='*60}\n")
+            console.print(f"Error processing {airport_code}: {e}", style="bold red")
+
+    console.rule()
+    console.print("✓ Report generated successfully.", style="green")
+    console.print(f"Adaptive Weights - Open-Meteo: {adaptive_weights['openmeteo']:.2f}, NWS: {adaptive_weights['nws']:.2f}", style="cyan")
+    console.rule()
 
 if __name__ == '__main__':
     main()
