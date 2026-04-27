@@ -2,6 +2,10 @@
 __pycache__/
 *.py[cod]
 
+# Generated model state
+forecast_performance.json
+forecast_runs.jsonl
+
 # Virtual environment
 venv/
 .venv/
